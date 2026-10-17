@@ -1,0 +1,16 @@
+// Single source of truth for the Hyper AI identity. Change values here, not in
+// apply.ts, when the product name, bundle id or release repository moves.
+export const brand = {
+  name: "Hyper AI",
+  cli: "hyper-ai",
+  // Desktop bundle id. `.dev` / `.beta` suffixes are kept for non-prod channels.
+  appId: "ai.hyperai.desktop",
+  // URL scheme for deep links; deliberately different from `opencode` so the
+  // repack can be installed next to the official app.
+  scheme: "hyper-ai",
+  vendor: "Bikinin AI",
+  maintainerEmail: "noreply@bikinin.ai.id",
+  repo: { owner: "bikinin-ai-id", name: "opencode-repack" },
+  homepage: "https://github.com/bikinin-ai-id/opencode-repack",
+  summary: "AI coding agent, repacked from OpenCode",
+}
