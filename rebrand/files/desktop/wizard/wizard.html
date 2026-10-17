@@ -165,8 +165,8 @@
         if (update.type === "complete") {
           finished = true
           running = false
-          $("title").textContent = update.failed ? "Selesai dengan catatan" : "Semuanya siap"
-          $("subtitle").textContent = update.failed
+          $("title").textContent = update.failed.length ? "Selesai dengan catatan" : "Semuanya siap"
+          $("subtitle").textContent = update.failed.length
             ? "Sebagian komponen gagal dan akan dicoba lagi saat Hyper AI dibuka berikutnya."
             : "Hyper AI siap dipakai."
           $("next").textContent = "Mulai pakai Hyper AI"

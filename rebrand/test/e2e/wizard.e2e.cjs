@@ -74,7 +74,7 @@ const check = (name, ok, detail = "") => {
   const title = await page.textContent("#title")
   const statuses = await page.$$eval("#progress .row", (rows) => rows.map((r) => [r.id.replace("row-", ""), r.dataset.status]))
   console.log("statuses", JSON.stringify(statuses))
-  check("wizard reports completion", title.includes("Semuanya siap") || title.includes("catatan"), title)
+  check("wizard reports completion", title.includes("Semuanya siap"), title)
   for (const [id, status] of statuses) check(`${id} finished`, status === "done" || status === "skipped", status)
 
   // Filesystem results

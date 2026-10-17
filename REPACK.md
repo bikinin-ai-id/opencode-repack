@@ -55,6 +55,32 @@ bun rebrand/verify.ts packages/cli/dist/cli-linux-x64/bin/opencode
 
 `apply.ts` is idempotent; running it twice is safe.
 
+## Ready to use after install
+
+The desktop installer ships Context7 (vendored by `rebrand/scripts/prepare-bundle.ts`)
+and registers it as an MCP server on first launch, using the app's own Electron
+binary as Node. A setup wizard (`rebrand/files/desktop/wizard`) then offers the
+heavier local stack, each component skipped when already present:
+
+| Component | Source | Size |
+| --- | --- | --- |
+| LM Studio | official installer from `installers.lmstudio.ai`, unmodified (Windows x64/arm64, macOS arm64, Linux x64/arm64) | ~0.6-1.3 GB |
+| Qwen3.5 9B (Q4_K_M) | Hugging Face `unsloth/Qwen3.5-9B-GGUF`, into `~/.lmstudio/models` | 5.7 GB |
+| Hindsight memory | `hindsight-api` from PyPI into a private uv-managed Python environment (CPU wheels), started with the app on 127.0.0.1:8888 and registered as MCP `mem` | ~2 GB |
+
+Versions and URLs are pinned in `rebrand/files/desktop/hyper/manifest.ts`.
+Nothing third-party is redistributed inside the installer: everything else is
+downloaded from its publisher on the user's machine. Reopen the wizard with
+`--hyper-setup`; logs are in `<userData>/hyper-bundle/logs`.
+
+Tests: `cd rebrand && bun test` (unit), and
+`rebrand/test/e2e/wizard.e2e.cjs` drives the real wizard in Electron (needs a
+display, for example `xvfb-run`, and network).
+
+Not included: LM Studio and OpenWork rebrands (patching proprietary binaries is
+not redistributable), Engram (631 MB of dependencies), and the V2 Hindsight and
+Engram plugin ports, which exist only in the private backup.
+
 ## Behaviour changes beyond naming
 
 - The official update channel is never queried: the updater policy defaults to
