@@ -119,6 +119,10 @@ jobs:
       - name: Verify branding
         run: bun .repack/rebrand/verify.ts packages/cli/dist/cli-linux-x64/bin/opencode
 
+      - name: Repack unit tests
+        working-directory: .repack/rebrand
+        run: bun test
+
       - name: Wordmark test
         working-directory: packages/tui
         run: bun test --timeout 90000 test/logo-render.test.tsx
@@ -224,6 +228,10 @@ jobs:
 
       - name: Rebrand
         run: bun .repack/rebrand/apply.ts .
+
+      # Context7 and the setup wizard travel inside the installer (extraResources).
+      - name: Vendor setup bundle
+        run: bun .repack/rebrand/scripts/prepare-bundle.ts packages/desktop
 
       - name: Prepare
         run: bun ./scripts/prepare.ts

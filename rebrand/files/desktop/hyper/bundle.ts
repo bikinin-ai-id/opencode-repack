@@ -1,0 +1,146 @@
+import { app, BrowserWindow, ipcMain, Notification } from "electron"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import type { ChildProcess } from "node:child_process"
+import { components, provision } from "./components"
+import { applyServers, managed } from "./config"
+import { hindsightInstalled, startHindsight } from "./hindsight"
+import { lmStudioInstalled, startLmServer } from "./lmstudio"
+import { manifest } from "./manifest"
+
+// Makes a fresh Hyper AI install usable without manual setup:
+//   - Context7 ships inside the installer and is registered as an MCP server
+//   - the first launch opens a setup wizard for the heavier local stack
+//     (LM Studio, a local model, the Hindsight memory server)
+//   - installed services start with the app
+// Failures are logged and shown in the wizard; the app never waits on this.
+// Run `--hyper-setup` to open the wizard again.
+
+type State = { wizard?: "completed" | "skipped" }
+
+const dataDir = () => path.join(app.getPath("userData"), "hyper-bundle")
+const logDir = () => path.join(dataDir(), "logs")
+const configDir = () => path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"), "opencode")
+// HYPER_AI_BUNDLE_ROOT lets the end-to-end test run an unpackaged app against a prepared bundle.
+const bundleRoot = () => process.env.HYPER_AI_BUNDLE_ROOT ?? path.join(process.resourcesPath, "hyper-bundle")
+const stateFile = () => path.join(dataDir(), "state.json")
+
+export async function startHyperBundle() {
+  if (!app.isPackaged && !process.env.HYPER_AI_BUNDLE_ROOT) return
+  const children: ChildProcess[] = []
+  app.once("will-quit", () => children.forEach((child) => child.kill()))
+
+  await registerContext7()
+
+  const state = await readState()
+  if (!state.wizard || process.argv.includes("--hyper-setup")) await openWizard()
+
+  // Services run on every launch once installed, not only right after setup.
+  await startServices(children)
+}
+
+async function startServices(children: ChildProcess[]) {
+  if (await hindsightInstalled(dataDir())) {
+    const child = await startHindsight(dataDir(), logDir())
+    if (child) children.push(child)
+    await registerMemory()
+  }
+  if (await lmStudioInstalled(dataDir())) await startLmServer(logDir())
+}
+
+function openWizard() {
+  return new Promise<void>((resolve) => {
+    const window = new BrowserWindow({
+      width: 680,
+      height: 560,
+      resizable: false,
+      title: "Hyper AI Setup",
+      autoHideMenuBar: true,
+      webPreferences: {
+        preload: path.join(bundleRoot(), "wizard", "preload.cjs"),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    const send = (update: unknown) => window.isDestroyed() || window.webContents.send("hyper:progress", update)
+    let outcome: State["wizard"] = "skipped"
+
+    ipcMain.handle("hyper:plan", () =>
+      Promise.all(
+        components.map(async (item) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          bytes: item.bytes,
+          required: item.required ?? false,
+          recommended: item.recommended ?? false,
+          installed: !item.required && (await item.installed(dataDir())),
+        })),
+      ),
+    )
+    ipcMain.handle("hyper:start", async (_event, ids: string[]) => {
+      const failed = await provision(ids, dataDir(), (update) => {
+        if (update.type === "step") send({ ...update })
+        else send(update)
+        if (update.type === "step") void log(update.id, `${update.status} ${update.message ?? ""}`)
+      })
+      if (!failed.length) outcome = "completed"
+      new Notification({
+        title: "Hyper AI",
+        body: failed.length
+          ? `Setup incomplete (${failed.join(", ")}). Retry with --hyper-setup.`
+          : "Local AI setup finished.",
+      }).show()
+    })
+    ipcMain.handle("hyper:skip", () => window.close())
+    ipcMain.handle("hyper:finish", () => window.close())
+
+    window.on("closed", async () => {
+      ipcMain.removeHandler("hyper:plan")
+      ipcMain.removeHandler("hyper:start")
+      ipcMain.removeHandler("hyper:skip")
+      ipcMain.removeHandler("hyper:finish")
+      // Closing without finishing asks again on the next launch.
+      if (outcome === "completed") await writeState({ wizard: outcome })
+      resolve()
+    })
+    void window.loadFile(path.join(bundleRoot(), "wizard", "wizard.html"))
+  })
+}
+
+async function registerContext7() {
+  const entry = path.join(bundleRoot(), manifest.context7.entry)
+  await applyServers(configDir(), {
+    context7: managed({
+      type: "local",
+      // The app's own Electron binary doubles as Node, so no system Node is needed.
+      command: [process.execPath, entry],
+      environment: { ELECTRON_RUN_AS_NODE: "1" },
+    }),
+  }).catch((error) => log("context7", error))
+}
+
+async function registerMemory() {
+  const { host, port } = manifest.hindsight
+  await applyServers(configDir(), {
+    mem: managed({ type: "remote", url: `http://${host}:${port}/mcp/`, oauth: false }),
+  }).catch((error) => log("mem", error))
+}
+
+async function log(scope: string, detail: unknown) {
+  const line = `${new Date().toISOString()} [${scope}] ${detail instanceof Error ? detail.stack : String(detail)}\n`
+  await mkdir(logDir(), { recursive: true })
+  await writeFile(path.join(logDir(), "setup.log"), line, { flag: "a" }).catch(() => undefined)
+}
+
+async function readState(): Promise<State> {
+  const text = await readFile(stateFile(), "utf8").catch(() => undefined)
+  return text ? (JSON.parse(text) as State) : {}
+}
+
+async function writeState(state: State) {
+  await mkdir(dataDir(), { recursive: true })
+  await writeFile(stateFile(), JSON.stringify(state, null, 2))
+}

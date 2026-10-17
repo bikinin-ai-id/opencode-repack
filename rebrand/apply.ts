@@ -510,6 +510,15 @@ type Write = { file: string; source: string; critical?: boolean; create?: boolea
 const writes: Write[] = [
   { file: "packages/tui/src/logo.ts", source: "logo.ts", critical: true },
   { file: "packages/tui/test/logo-render.test.tsx", source: "logo-render.test.tsx", create: true },
+  // First-run provisioning for the desktop app (see rebrand/files/desktop/hyper).
+  ...["bundle", "components", "config", "download", "hindsight", "lmstudio", "manifest", "platform", "process"].map(
+    (name) => ({
+      file: `packages/desktop/src/main/hyper/${name}.ts`,
+      source: `desktop/hyper/${name}.ts`,
+      critical: true,
+      create: true,
+    }),
+  ),
 ]
 
 // Directories copied verbatim over upstream (icons are binary).
@@ -529,6 +538,8 @@ const checks: Array<{ file: string; contains: string }> = [
   { file: "packages/desktop/electron-builder.config.ts", contains: `productName: "${NAME}"` },
   { file: "packages/desktop/electron-builder.config.ts", contains: brand.repo.name },
   { file: "packages/desktop/src/main/constants.ts", contains: brand.appId },
+  { file: "packages/desktop/src/main/desktop.ts", contains: "startHyperBundle" },
+  { file: "packages/desktop/electron-builder.config.ts", contains: "hyper-bundle" },
 ]
 
 const cache = new Map<string, string>()

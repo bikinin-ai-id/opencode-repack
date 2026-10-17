@@ -1,0 +1,15 @@
+// Exposes the setup wizard's narrow API to its page. Runs sandboxed: only
+// ipcRenderer is used, and every channel is fixed here.
+const { contextBridge, ipcRenderer } = require("electron")
+
+contextBridge.exposeInMainWorld("hyperSetup", {
+  plan: () => ipcRenderer.invoke("hyper:plan"),
+  start: (ids) => ipcRenderer.invoke("hyper:start", ids),
+  skip: () => ipcRenderer.invoke("hyper:skip"),
+  finish: () => ipcRenderer.invoke("hyper:finish"),
+  onProgress: (listener) => {
+    const handler = (_event, update) => listener(update)
+    ipcRenderer.on("hyper:progress", handler)
+    return () => ipcRenderer.off("hyper:progress", handler)
+  },
+})
