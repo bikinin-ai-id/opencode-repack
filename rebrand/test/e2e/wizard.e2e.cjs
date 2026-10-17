@@ -90,8 +90,8 @@ const check = (name, ok, detail = "") => {
     check("LM Studio AppImage installed and executable", fs.existsSync(image) && (fs.statSync(image).mode & 0o111) !== 0, image)
   }
 
-  await page.click("#next")
-  await app.waitForEvent("window", { timeout: 1000 }).catch(() => undefined)
+  // Finishing closes the window, which can abort the click itself.
+  await page.click("#next", { noWaitAfter: true }).catch(() => undefined)
   await new Promise((resolve) => setTimeout(resolve, 3000))
   const state = path.join(work, "userdata", "hyper-bundle", "state.json")
   check("wizard remembered completion", fs.existsSync(state) && JSON.parse(fs.readFileSync(state, "utf8")).wizard === "completed")
