@@ -364,6 +364,21 @@ const rules: Rule[] = [
   },
 
   { file: "packages/desktop/src/main/lifecycle/deep-link.test.ts", find: "opencode://", replace: `${brand.scheme}://` },
+  // Ship the vendored bundle (Context7 + setup wizard) next to the app resources.
+  {
+    file: "packages/desktop/electron-builder.config.ts",
+    find: '    extraResources: [\n      {\n        from: "resources/",',
+    replace:
+      '    extraResources: [\n      { from: "hyper-bundle/", to: "hyper-bundle" },\n      {\n        from: "resources/",',
+    critical: true,
+  },
+  // Start the first-run provisioner once the main bundle has loaded.
+  {
+    file: "packages/desktop/src/main/desktop.ts",
+    find: "marks.bundle = Date.now()",
+    replace: 'marks.bundle = Date.now()\n\nvoid import("./hyper/bundle").then((module) => module.startHyperBundle())',
+    critical: true,
+  },
   // Windows signing needs the upstream Azure account; without it the build is simply unsigned.
   {
     file: "packages/desktop/electron-builder.config.ts",

@@ -1,8 +1,7 @@
 import { createWriteStream } from "node:fs"
 import { mkdir, rename, stat } from "node:fs/promises"
 import path from "node:path"
-import { Readable } from "node:stream"
-import { pipeline } from "node:stream/promises"
+import { once } from "node:events"
 
 /**
  * Downloads `url` to `dest` through a `.part` file, resuming a previous
@@ -24,9 +23,13 @@ export async function download(url: string, dest: string, onProgress?: (done: nu
   const total = length ? start + length : 0
 
   let done = start
-  const body = Readable.fromWeb(response.body)
-  body.on("data", (chunk: Buffer) => onProgress?.((done += chunk.length), total))
-  await pipeline(body, createWriteStream(part, { flags: resumed ? "a" : "w" }))
+  const out = createWriteStream(part, { flags: resumed ? "a" : "w" })
+  for await (const chunk of response.body) {
+    if (!out.write(chunk)) await once(out, "drain")
+    onProgress?.((done += chunk.length), total)
+  }
+  out.end()
+  await once(out, "finish")
 
   if (total && (await stat(part)).size !== total) throw new Error(`Incomplete download: ${url}`)
   await rename(part, dest)
