@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:" />
+    <title>Hyper AI Setup</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --panel: #f4f6f9;
+        --text: #17202e;
+        --muted: #5b6676;
+        --line: #dde2ea;
+        --accent: #455c7b;
+        --accent-text: #ffffff;
+        --ok: #1f7a4d;
+        --err: #b3261e;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #11161f;
+          --panel: #1a212d;
+          --text: #e8edf5;
+          --muted: #9aa6b8;
+          --line: #2b3444;
+          --accent: #8fa8cc;
+          --accent-text: #11161f;
+          --ok: #5fcf9a;
+          --err: #ff8a80;
+        }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.5 system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+      main { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; padding: 24px 28px 20px; gap: 18px; }
+      header h1 { margin: 0 0 4px; font-size: 20px; }
+      header p { margin: 0; color: var(--muted); }
+      ol { display: flex; gap: 8px; list-style: none; margin: 14px 0 0; padding: 0; }
+      ol li { flex: 1; height: 4px; border-radius: 2px; background: var(--line); }
+      ol li.on { background: var(--accent); }
+      section[hidden] { display: none; }
+      .list { display: grid; gap: 10px; }
+      label.item, .row { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+      label.item input { width: 18px; height: 18px; accent-color: var(--accent); }
+      .name { font-weight: 600; }
+      .desc, .size, .msg { color: var(--muted); font-size: 12.5px; }
+      .tag { font-size: 12px; color: var(--ok); }
+      .row { grid-template-columns: 1fr auto; row-gap: 8px; }
+      .bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+      .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+      .row[data-status="done"] .bar i { background: var(--ok); width: 100% !important; }
+      .row[data-status="failed"] .bar i { background: var(--err); }
+      .status { font-size: 12.5px; }
+      .row[data-status="done"] .status { color: var(--ok); }
+      .row[data-status="failed"] .status { color: var(--err); }
+      footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+      footer .note { color: var(--muted); font-size: 12.5px; }
+      button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+      button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .actions { display: flex; gap: 8px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1 id="title">Selamat datang di Hyper AI</h1>
+        <p id="subtitle">Siapkan komponen AI lokal agar Hyper AI langsung siap dipakai.</p>
+        <ol id="steps"><li class="on"></li><li></li><li></li></ol>
+      </header>
+
+      <section id="step-welcome">
+        <div class="list">
+          <div class="row"><div><div class="name">Yang akan disiapkan</div><div class="desc">Pilih komponen di langkah berikutnya. Semua diunduh langsung dari penerbit resminya dan bisa diulang kapan saja.</div></div></div>
+          <div class="row"><div><div class="name">Konteks &amp; memori untuk agen</div><div class="desc">Context7 (dokumentasi library terbaru) sudah termasuk. Memori jangka panjang Hindsight dan model lokal bersifat opsional.</div></div></div>
+        </div>
+      </section>
+
+      <section id="step-choose" hidden>
+        <div class="list" id="components"></div>
+      </section>
+
+      <section id="step-run" hidden>
+        <div class="list" id="progress"></div>
+      </section>
+
+      <footer>
+        <span class="note" id="note"></span>
+        <div class="actions">
+          <button id="back" hidden>Kembali</button>
+          <button id="skip">Nanti saja</button>
+          <button id="next" class="primary">Lanjut</button>
+        </div>
+      </footer>
+    </main>
+
+    <script>
+      const api = window.hyperSetup
+      const $ = (id) => document.getElementById(id)
+      let plan = []
+      let step = 0
+      let running = false
+      let finished = false
+
+      const formatSize = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(1) + " GB" : Math.round(bytes / 1e6) + " MB")
+
+      function show(index) {
+        step = index
+        ;["welcome", "choose", "run"].forEach((name, i) => ($("step-" + name).hidden = i !== index))
+        ;[...$("steps").children].forEach((li, i) => li.classList.toggle("on", i <= index))
+        $("back").hidden = index !== 1
+        $("skip").hidden = index === 2
+        $("title").textContent = ["Selamat datang di Hyper AI", "Pilih komponen", "Menyiapkan..."][index]
+        $("subtitle").textContent = [
+          "Siapkan komponen AI lokal agar Hyper AI langsung siap dipakai.",
+          "Komponen yang sudah terpasang dilewati otomatis.",
+          "Biarkan jendela ini terbuka. Anda tetap bisa memakai Hyper AI sambil menunggu.",
+        ][index]
+        $("next").textContent = ["Lanjut", "Pasang yang dipilih", "Menyiapkan..."][index]
+        $("next").disabled = index === 2
+        $("note").textContent = index === 1 ? "Perkiraan ruang: " + formatSize(selectedBytes()) : ""
+      }
+
+      function selectedIds() {
+        return [...document.querySelectorAll("#components input:checked")].map((input) => input.dataset.id)
+      }
+      function selectedBytes() {
+        const ids = selectedIds()
+        return plan.filter((item) => ids.includes(item.id) && !item.installed).reduce((sum, item) => sum + item.bytes, 0)
+      }
+
+      function renderChoices() {
+        $("components").innerHTML = ""
+        for (const item of plan) {
+          const label = document.createElement("label")
+          label.className = "item"
+          label.innerHTML = '<input type="checkbox" data-id="' + item.id + '">' +
+            '<span><span class="name"></span><br><span class="desc"></span></span><span class="size"></span>'
+          const input = label.querySelector("input")
+          input.checked = item.required || item.recommended
+          input.disabled = item.required || item.installed
+          label.querySelector(".name").textContent = item.name
+          label.querySelector(".desc").textContent = item.description
+          label.querySelector(".size").textContent = item.installed ? "Terpasang" : item.required ? "Termasuk" : formatSize(item.bytes)
+          if (item.installed) label.querySelector(".size").className = "tag"
+          input.addEventListener("change", () => ($("note").textContent = "Perkiraan ruang: " + formatSize(selectedBytes())))
+          $("components").append(label)
+        }
+      }
+
+      function renderProgress(ids) {
+        $("progress").innerHTML = ""
+        for (const item of plan.filter((entry) => ids.includes(entry.id) && !entry.required)) {
+          const row = document.createElement("div")
+          row.className = "row"
+          row.id = "row-" + item.id
+          row.dataset.status = "pending"
+          row.innerHTML = '<div><div class="name"></div><div class="msg">Menunggu</div></div><div class="status">Menunggu</div><div class="bar"><i></i></div>'
+          row.querySelector(".name").textContent = item.name
+          $("progress").append(row)
+        }
+      }
+
+      const statusText = { pending: "Menunggu", running: "Berjalan", done: "Selesai", failed: "Gagal", skipped: "Dilewati" }
+      function applyProgress(update) {
+        if (update.type === "complete") {
+          finished = true
+          running = false
+          $("title").textContent = update.failed.length ? "Selesai dengan catatan" : "Semuanya siap"
+          $("subtitle").textContent = update.failed.length
+            ? "Sebagian komponen gagal dan akan dicoba lagi saat Hyper AI dibuka berikutnya."
+            : "Hyper AI siap dipakai."
+          $("next").textContent = "Mulai pakai Hyper AI"
+          $("next").disabled = false
+          return
+        }
+        const row = $("row-" + update.id)
+        if (!row) return
+        row.dataset.status = update.status
+        row.querySelector(".status").textContent = statusText[update.status] ?? update.status
+        row.querySelector(".msg").textContent = update.message ?? ""
+        if (typeof update.fraction === "number") row.querySelector(".bar i").style.width = Math.round(update.fraction * 100) + "%"
+      }
+
+      $("next").addEventListener("click", async () => {
+        if (finished) return api.finish()
+        if (step === 0) return show(1)
+        if (step === 1) {
+          const ids = selectedIds()
+          renderProgress(ids)
+          show(2)
+          running = true
+          await api.start(ids)
+        }
+      })
+      $("back").addEventListener("click", () => show(0))
+      $("skip").addEventListener("click", () => api.skip())
+
+      api.onProgress(applyProgress)
+      api.plan().then((items) => {
+        plan = items
+        renderChoices()
+        show(0)
+      })
+    </script>
+  </body>
+</html>

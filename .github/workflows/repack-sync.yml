@@ -1,0 +1,73 @@
+name: repack-sync
+
+# Keeps the repack from falling behind upstream OpenCode.
+#
+#  1. Detects a new upstream release tag and dispatches repack-build for it.
+#     The build always starts from the upstream tag itself, so this step never
+#     needs a merge and cannot conflict.
+#  2. Best effort: merges upstream/dev into this repository's dev branch so the
+#     source stays browsable and current. Upstream edits workflow files, which
+#     the default GITHUB_TOKEN may not push; set the REPACK_PUSH_TOKEN secret
+#     (a PAT with `repo` and `workflow` scope) to enable the merge.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  UPSTREAM_URL: https://github.com/anomalyco/opencode
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch a build for a new upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref=$(git ls-remote --tags --refs "$UPSTREAM_URL" \
+            | sed 's#.*refs/tags/##' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n 1)
+          [ -n "$ref" ] || { echo "no upstream release tag found"; exit 1; }
+          tag="hyper-${ref}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "upstream ${ref} already released as ${tag}"
+            exit 0
+          fi
+          echo "new upstream release ${ref}: dispatching build"
+          gh workflow run repack-build.yml --repo "$GITHUB_REPOSITORY" --ref "${GITHUB_REF_NAME}" -f upstream_ref="$ref"
+
+  mirror:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.REPACK_PUSH_TOKEN || github.token }}
+
+      - name: Merge upstream dev
+        run: |
+          git config user.name "hyper-ai-sync"
+          git config user.email "noreply@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream dev
+          if git merge-base --is-ancestor upstream/dev HEAD; then
+            echo "dev already contains upstream/dev"
+            exit 0
+          fi
+          git merge --no-edit upstream/dev -m "chore(repack): merge upstream dev"
+
+      - name: Push
+        run: |
+          if [ -z "${{ secrets.REPACK_PUSH_TOKEN }}" ] && git diff --name-only origin/dev HEAD | grep -q '^.github/workflows/'; then
+            echo "::warning::upstream changed workflow files; set REPACK_PUSH_TOKEN (PAT with workflow scope) to mirror them"
+            exit 0
+          fi
+          git push origin HEAD:dev

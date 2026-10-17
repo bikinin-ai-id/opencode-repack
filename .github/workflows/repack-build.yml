@@ -1,0 +1,302 @@
+name: repack-build
+run-name: "Hyper AI build ${{ inputs.upstream_ref || 'latest' }}"
+
+# Builds the Hyper AI repack from an *upstream* OpenCode tag: the upstream
+# source is checked out untouched, rebrand/apply.ts patches it, and the result
+# is built for Windows, Linux and macOS (desktop installers + standalone CLI).
+# Nothing here depends on this repository's copy of the upstream source, so a
+# new upstream release never has to be merged before it can be built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream tag to build (for example v2.0.32). Empty = newest upstream release tag."
+        required: false
+        type: string
+      publish:
+        description: "Publish a GitHub release with the built installers"
+        required: false
+        default: true
+        type: boolean
+      force:
+        description: "Rebuild and overwrite the release even if it already exists"
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      upstream_ref:
+        required: false
+        type: string
+      publish:
+        required: false
+        default: true
+        type: boolean
+      force:
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repack-build-${{ inputs.upstream_ref || 'latest' }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: anomalyco/opencode
+  UPSTREAM_URL: https://github.com/anomalyco/opencode
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.upstream_ref }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          ref="$REQUESTED"
+          if [ -z "$ref" ]; then
+            ref=$(git ls-remote --tags --refs "$UPSTREAM_URL" \
+              | sed 's#.*refs/tags/##' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -n 1)
+          fi
+          [ -n "$ref" ] || { echo "could not resolve an upstream release tag"; exit 1; }
+          version="${ref#v}"
+          tag="hyper-v${version}"
+          skip=false
+          if [ "$FORCE" != "true" ] && gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists - nothing to do"
+            skip=true
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  build-cli:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          fetch-tags: true
+
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          path: .repack
+          sparse-checkout: rebrand
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Rebrand
+        run: bun .repack/rebrand/apply.ts .
+
+      - name: Build CLI (all targets)
+        id: build
+        run: |
+          echo "bun=bun-v$(bun --version)" >> "$GITHUB_OUTPUT"
+          BUN_COMPILE_RELEASE="bun-v$(bun --version)" ./packages/cli/script/build.ts
+        env:
+          OPENCODE_CHANNEL: latest
+          OPENCODE_VERSION: ${{ needs.resolve.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Verify branding
+        run: bun .repack/rebrand/verify.ts packages/cli/dist/cli-linux-x64/bin/opencode
+
+      - name: Repack unit tests
+        working-directory: .repack/rebrand
+        run: bun test
+
+      - name: Wordmark test
+        working-directory: packages/tui
+        run: bun test --timeout 90000 test/logo-render.test.tsx
+
+      - name: Package CLI archives
+        run: bun .repack/rebrand/scripts/package-cli.ts packages/cli/dist release-cli
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyper-ai-cli-dist
+          path: packages/cli/dist/cli-*
+          retention-days: 3
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyper-ai-cli-archives
+          path: release-cli/*
+
+  build-desktop:
+    needs: [resolve, build-cli]
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ${{ matrix.settings.host }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: macos-15-intel
+            target: x86_64-apple-darwin
+            platform_flag: --mac --x64
+            bun_install_flags: --os=darwin --cpu=x64
+          - host: macos-15
+            target: aarch64-apple-darwin
+            platform_flag: --mac --arm64
+            bun_install_flags: --os=darwin --cpu=arm64
+          - host: windows-2025
+            target: x86_64-pc-windows-msvc
+            platform_flag: --win
+          - host: windows-2025
+            target: aarch64-pc-windows-msvc
+            platform_flag: --win --arm64
+            bun_install_flags: --cpu=*
+          - host: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform_flag: --linux
+          - host: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform_flag: --linux --arm64
+    env:
+      OPENCODE_CHANNEL: prod
+      OPENCODE_VERSION: ${{ needs.resolve.outputs.version }}
+      OPENCODE_CLI_TARGET: ${{ matrix.settings.target }}
+      OPENCODE_CLI_DIST: ${{ github.workspace }}/packages/cli/dist
+      # Optional signing. Without these secrets the installers are unsigned.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          path: .repack
+          sparse-checkout: rebrand
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hyper-ai-cli-dist
+          path: packages/cli/dist
+
+      - uses: apple-actions/import-codesign-certs@8f3fb608891dd2244cdab3d69cd68c0d37a7fe93 # v2.0.0
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        with:
+          keychain: build
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Setup Apple API key
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        run: echo "${{ secrets.APPLE_API_KEY_PATH }}" > $RUNNER_TEMP/apple-api-key.p8
+
+      - uses: ./.github/actions/setup-bun
+        with:
+          install-flags: ${{ matrix.settings.bun_install_flags }}
+
+      - name: Azure login
+        if: runner.os == 'Windows' && env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME != ''
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install packaging tools (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm
+
+      - name: Rebrand
+        run: bun .repack/rebrand/apply.ts .
+
+      # Context7 and the setup wizard travel inside the installer (extraResources).
+      - name: Vendor setup bundle
+        run: bun .repack/rebrand/scripts/prepare-bundle.ts packages/desktop
+
+      - name: Prepare
+        run: bun ./scripts/prepare.ts
+        working-directory: packages/desktop
+
+      - name: Build
+        run: bun run build
+        working-directory: packages/desktop
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: Package
+        run: npx electron-builder ${{ matrix.settings.platform_flag }} --publish never --config electron-builder.config.ts
+        working-directory: packages/desktop
+        timeout-minutes: 60
+        env:
+          CSC_KEYCHAIN: ${{ secrets.APPLE_CERTIFICATE != '' && 'build.keychain' || '' }}
+          APPLE_API_KEY: ${{ runner.temp }}/apple-api-key.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
+      - name: Verify installer names
+        shell: bash
+        run: bun .repack/rebrand/verify.ts packages/cli/dist/cli-linux-x64/bin/opencode --desktop packages/desktop/dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyper-ai-desktop-${{ matrix.settings.target }}
+          path: |
+            packages/desktop/dist/*.exe
+            packages/desktop/dist/*.dmg
+            packages/desktop/dist/*.zip
+            packages/desktop/dist/*.AppImage
+            packages/desktop/dist/*.deb
+            packages/desktop/dist/*.rpm
+            packages/desktop/dist/*.blockmap
+
+  release:
+    needs: [resolve, build-cli, build-desktop]
+    if: inputs.publish && needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: hyper-ai-desktop-*
+          path: assets
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hyper-ai-cli-archives
+          path: assets
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          UPSTREAM_REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          ls -la assets
+          notes="Hyper AI ${VERSION}, repacked from OpenCode [${UPSTREAM_REF}](${UPSTREAM_URL}/releases/tag/${UPSTREAM_REF}).\n\nInstallers: Windows (.exe), macOS (.dmg/.zip), Linux (.AppImage/.deb/.rpm). Standalone CLI: hyper-ai-<os>-<arch>."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" \
+              --title "Hyper AI ${VERSION}" --notes "$(printf "$notes")" --target "${GITHUB_SHA}"
+          fi
